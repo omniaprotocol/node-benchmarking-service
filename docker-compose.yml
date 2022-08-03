@@ -1,0 +1,39 @@
+version: "3.9"
+services:
+  redis: 
+    image: redis:6.2-alpine
+    container_name: redis
+    ports: 
+      - 6379:${REDIS_PORT}
+    networks: 
+      vpcbr:
+        ipv4_address: ${REDIS_ADDRESS}
+  benchmarking:
+    build: .
+    container_name: benchmarking
+    networks: 
+      vpcbr:
+        ipv4_address: ${SERVER_HOST}
+    environment:
+      SERVER_HOST : ${SERVER_HOST}
+      SERVER_PORT : ${SERVER_PORT}
+      LOG_FILE_PATH: ${LOG_FILE_PATH}
+      REDIS_ADDRESS: ${REDIS_ADDRESS}
+      REDIS_PORT: ${REDIS_PORT}
+    ports:
+      - 8080:${SERVER_PORT}
+    volumes:
+      - ./file_log.json:${LOG_FILE_PATH}
+    restart: on-failure
+    depends_on:
+      - redis
+    links:
+      - redis
+      
+networks:
+  vpcbr:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.5.0.0/16
+          gateway: 10.5.0.1
