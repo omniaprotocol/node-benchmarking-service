@@ -17,13 +17,10 @@ services:
     environment:
       SERVER_HOST : ${SERVER_HOST}
       SERVER_PORT : ${SERVER_PORT}
-      LOG_FILE_PATH: ${LOG_FILE_PATH}
       REDIS_ADDRESS: ${REDIS_ADDRESS}
       REDIS_PORT: ${REDIS_PORT}
     ports:
       - 8080:${SERVER_PORT}
-    volumes:
-      - ./file_log.json:${LOG_FILE_PATH}
     restart: on-failure
     depends_on:
       - redis

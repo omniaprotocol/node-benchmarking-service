@@ -1,3 +1,14 @@
+# Description
+```
+This service tests performance of BTC and EVM nodes by replicating real-world patterns with specific JSON-RPC payloads. 
+```
+
+# Usage
+After making the .env file based on the .env.example provided, use
+```
+docker-compose up
+```
+in this project's directory
 # Service Architecture
 ![Benchmarking service architecture](./benchmarking_service_scheme.png)
 
@@ -10,7 +21,7 @@
 ```
 {
 	"chain": "EVM",
-    "endpoint": "http://8.8.8.8"
+    "endpoint": "https://endpoints.omniatech.io/v1/<chain>/<endpoint-uuid>"
 	"threads": 20,
 	"duration": 60
 }
@@ -19,7 +30,7 @@
 ```
 {
 	"chain": "BTC",
-    "endpoint": "https://my.private.node:8545"
+    "endpoint": "https://endpoints.omniatech.io/v1/<chain>/<endpoint-uuid>"
 	"threads": 10,
 	"duration": 60
 }
@@ -28,7 +39,7 @@
 ```
 {
 	"chain": "EVM",
-    "endpoint": "http://127.0.0.1"
+    "endpoint": "https://endpoints.omniatech.io/v1/<chain>/<endpoint-uuid>"
 	"threads": 20,
 	"duration": 60,
 	"authorization": "Basic YWxleDoxMjM0"
@@ -38,7 +49,7 @@
 ```
 {
 	"chain": "EVM",
-    "endpoint": "http://12.42.5.1:9000"
+    "endpoint": "https://endpoints.omniatech.io/v1/<chain>/<endpoint-uuid>"
 	"threads": 10,
 	"duration": 60,
 	"authorization": "Bearer MHnQx2fd4714ooTXZTq9"

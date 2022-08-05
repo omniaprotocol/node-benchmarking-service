@@ -13,6 +13,7 @@ pub async fn get_job(
     request: HttpRequest,
     state: web::Data<AppState>
 ) -> Result<impl Responder, AppError> {
+    // Get job_id from url
     let job_id = match request.match_info().get("job_id") {
         Some(j) => j,
         None => {
@@ -29,7 +30,7 @@ pub async fn get_job(
         }
     };
 
-    // Redis setup
+    // Connect to Redis db
     let redis_client = match Client::open(format!("redis://{}", state.redis_options.host.as_str())) {
         Ok(r) => r,
         Err(e) => {
@@ -57,16 +58,22 @@ pub async fn get_job(
         }
     };
 
+    // Search by job_id in Redis db
+    // {job_id:job_rps}
     let redis_response: Result<i64, RedisError> = redis_connection_manager.get(job_id).await;
     if redis_response.is_err() {
         return Ok(HttpResponse::with_body(StatusCode::NOT_FOUND, String::from("")));
     }
     let job_rps = redis_response.unwrap();
     
-    if job_rps == 0 || job_rps == -1 { // -1 - waiting to be scheduled, 0 - allocated, >0 - finished
+    // -1 => job is waiting to be scheduled, 
+    // 0 => job is allocated to a redis-worker, 
+    // >0 => job has been finished by a worker
+    if job_rps == 0 || job_rps == -1 { 
         return Ok(HttpResponse::with_body(StatusCode::OK, serde_json::to_string_pretty(&json!({"status":"PENDING"})).unwrap()));
     }
-    if job_rps == -2 { // -2 - treshold of fails/requests exceeded
+    // -2 => job's treshold of fails/requests exceeded, so job failed and dropped
+    if job_rps == -2 { 
         let res: Result<i32, RedisError> = redis_connection_manager.del(job_id).await;
         if res.is_err() {
             let sublog = state.log.new(o!(
@@ -91,6 +98,7 @@ pub async fn new_job(
     request_body: String,
     state: web::Data<AppState>
 ) -> Result<impl Responder, AppError> {
+    // Check request body corectness
     match parse_request_body(&state, request_body.clone()) {
         Ok(j) => j,
         Err(e) => return Err(e)
@@ -125,7 +133,10 @@ pub async fn new_job(
         }
     };
 
-    let job_id = match rsmq.send_message("jobs_q", request_body.clone(), Some(1)).await {
+    // Send the new TodoJob through RSMQ to the redis-workers
+    let job_id = match rsmq
+                                .send_message("jobs_q", request_body.clone(), Some(1))
+                                .await {
         Ok(j) => j,
         Err(e) => {
             let sublog = state.log.new(o!(
@@ -138,6 +149,8 @@ pub async fn new_job(
             }).map_err(log_error(sublog));
         }
     };
+
+    // if the job was sent successfully, mark it as waiting to be scheduled in the Redis db
     let res: Result<String, RedisError> = redis_connection_manager.set(job_id.clone(), -1).await;
     if res.is_err() {
         let sublog = state.log.new(o!(

@@ -15,31 +15,42 @@ pub async fn start_worker(
     log: Logger,
     fail_percentage_treshold: f64
 ) -> () {
+    // Connect to Redis db needed to sync workers and to schedule jobs
     let redis_client = Client::open(format!("redis://{}", redis_options.host.clone())).unwrap();
     let mut rsmq = Rsmq::new_with_connection(redis_options.clone(), redis_client.get_async_connection().await.unwrap());
     let mut redis_connection_manager = redis::aio::ConnectionManager::new(redis_client.clone()).await.unwrap();
+    
+    // Generate various payloads for the json-rpc requests that will be sent concurrently
     let eth_rpc_methods = gen_eth_json_rpc_methods();
     let btc_rpc_methods = gen_btc_json_rpc_methods();
     loop {
-        let msg:Result<Option<RsmqMessage<String>>, _> = rsmq.receive_message("jobs_q", None).await;
-        let msg = msg.unwrap();
-        if msg.is_none() {
+        // Redis-worker receives the new TodoJob through RSMQ from the web server (actix thread)
+        let rsmq_msg: Result<Option<RsmqMessage<String>>, _> = rsmq.receive_message("jobs_q", None).await;
+        let rsmq_msg = rsmq_msg.unwrap();
+        if rsmq_msg.is_none() {
             continue;
         }
-        let check_rps: Result<i64, RedisError> = redis_connection_manager.get(msg.clone().unwrap().id).await;
+        let check_rps: Result<i64, RedisError> = redis_connection_manager.get(rsmq_msg.clone().unwrap().id).await;
         if check_rps.is_err() {
             continue;
         }
         let check_rps = check_rps.unwrap();
-        if check_rps >= 0 { // 0 - already allocated, >0 - finished
+        if check_rps >= 0 { // 0 => job already allocated, >0 => job finished
             continue;
         }
-        let msg = msg.unwrap();
-        let job_id = msg.id.as_str();
+        let rsmq_msg = rsmq_msg.unwrap();
+        let job_id = rsmq_msg.id.as_str();
+
+        // Set this job as allocated such that it guarantees only this worker will execute it
+        // Note: the atomicity of this step is guaranteed by the SET command of Redis
         let res: Result<String, RedisError> = redis_connection_manager.set(job_id, 0).await;
-        let mut handlers: Vec<actix_web::rt::task::JoinHandle<(f64, f64)>> = Vec::new();
-        let job: models::TodoJob = serde_json::from_str(msg.message.as_str()).unwrap();
+
+        // These will handle the concurrent tasks launched by the worker as requested in the TodoJob body
+        let mut concurrent_threads_handlers: Vec<actix_web::rt::task::JoinHandle<(f64, f64)>> = Vec::new();
+        let job: models::TodoJob = serde_json::from_str(rsmq_msg.message.as_str()).unwrap();
         
+        // Apply prority-based randomness to the payloads send by the concurrent threads
+        // in order to replicate a real-world scenario as precisely as possible
         let mut rpc_payloads: Vec<&str> = Vec::with_capacity(job.duration as usize * 2000);
         select_rpc_payloads(&mut rpc_payloads, &eth_rpc_methods, &btc_rpc_methods, &job.chain, log.clone());
         
@@ -48,9 +59,9 @@ pub async fn start_worker(
             let thread_log = log.clone();
             let job = job.clone();
             let client_thread = client.clone();
-            let thread_rpc_payloads = rpc_payloads.clone(); //TODO: Optimization needed. Pass &rpc_payloads to spawned threads without cloning (maybe using scoped threads/crossbeam crate)
+            let thread_rpc_payloads = rpc_payloads.clone(); //TODO: Optimization needed. Pass &rpc_payloads to spawned threads without cloning (Node: see scoped threads/crossbeam crate)
             let start = Instant::now();
-            handlers.push(
+            concurrent_threads_handlers.push(
                 actix_web::rt::spawn( 
                     async move {
                         execute_job(&thread_log, &job, &start, &client_thread, &thread_rpc_payloads).await
@@ -59,8 +70,10 @@ pub async fn start_worker(
             );
         }
 
-        let join_results = futures::future::join_all(handlers).await;
+        // Worker waits for TodoJob's num_threads to finish
+        let join_results = futures::future::join_all(concurrent_threads_handlers).await;
         
+        // Check if the fails treshold is exceeded and mark job as failed (-2) or successfull (measured rps)
         let (exceeded_treshold, rps) = job_fails_exceed_treshold(join_results, fail_percentage_treshold, log.clone());
         if exceeded_treshold {
             let res: Result<String, RedisError> = redis_connection_manager.set(job_id, -2).await;
@@ -68,6 +81,7 @@ pub async fn start_worker(
             let res: Result<String, RedisError> = redis_connection_manager.set(job_id, rps).await;
         }
         
+        // Only now we can delete the job from RSMQ
         let res = rsmq.delete_message("jobs_q", job_id).await.unwrap();
     }
 
